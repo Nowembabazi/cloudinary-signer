@@ -5,7 +5,7 @@ const cloudinary = require('cloudinary').v2;
 
 const allowCors = fn => async (req, res) => {
   res.setHeader('Access-Control-Allow-Credentials', true);
-  res.setHeader('Access-Control-Allow-Origin', '*'); // Replace * with your Shopify domain for security
+  res.setHeader('Access-Control-Allow-Origin', '*'); 
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
@@ -181,5 +181,6 @@ export default allowCors(handler);
 
 // // // --- Wrap your handler with the CORS helper ---
 // // export default allowCors(signUploadHandler);
+
 
 
