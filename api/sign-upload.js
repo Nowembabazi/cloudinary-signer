@@ -1,22 +1,24 @@
 // api/sign-upload.js
 //
-// Backend for the Finishers Wall. Cloudinary is the shared image store —
-// every visitor who hits GET sees the same set of bibs, tagged with
-// CLOUDINARY_TAG. Uploads go live immediately (no moderation step).
+// Backend for the Finishers Wall (and any other wall sharing this backend).
+// Cloudinary is the shared image store. Uploads go live immediately.
 //
-// Required environment variables (set these in Vercel):
+// Required environment variables (set these in Vercel, then REDEPLOY):
 //   CLOUDINARY_CLOUD_NAME
 //   CLOUDINARY_API_KEY
 //   CLOUDINARY_API_SECRET
-//   CLOUDINARY_TAG            e.g. "finisher_wall_2026"
+//   CLOUDINARY_TAG            default tag used when GET has no ?tag=
 //   ADMIN_DELETE_PASSCODE     shared secret checked server-side before any delete
 //
 // Routes:
-//   POST   /api/sign-upload   -> sign upload params for a new bib
-//   GET    /api/sign-upload   -> list all bibs currently tagged CLOUDINARY_TAG
-//   DELETE /api/sign-upload   -> remove one bib (admin only, passcode required)
+//   POST   /api/sign-upload              -> sign upload params
+//   GET    /api/sign-upload?tag=<tag>    -> list bibs with that tag
+//   DELETE /api/sign-upload              -> remove one bib (passcode required)
 
 const cloudinary = require('cloudinary').v2;
+
+// Tags a client is allowed to request via ?tag=. Add your other walls' tags here.
+const EXTRA_ALLOWED_TAGS = ['finisher_wall_2026'];
 
 const allowCors = fn => async (req, res) => {
   res.setHeader('Access-Control-Allow-Credentials', true);
@@ -35,7 +37,7 @@ async function handler(request, response) {
   const cloud_name = process.env.CLOUDINARY_CLOUD_NAME;
   const api_key = process.env.CLOUDINARY_API_KEY;
   const api_secret = process.env.CLOUDINARY_API_SECRET;
-  const tag = process.env.CLOUDINARY_TAG;
+  const envTag = (process.env.CLOUDINARY_TAG || '').trim();
   const admin_passcode = process.env.ADMIN_DELETE_PASSCODE;
 
   if (!cloud_name || !api_key || !api_secret) {
@@ -45,12 +47,9 @@ async function handler(request, response) {
   cloudinary.config({ cloud_name, api_key, api_secret });
 
   try {
-    // ------------------------------------------------------------
-    // POST — sign the params for a new upload. No moderation flag,
-    // so the asset is public and live the moment the upload succeeds.
-    // ------------------------------------------------------------
+    // POST — sign the params for a new upload.
     if (request.method === 'POST') {
-      const body = request.body;
+      const body = request.body || {};
       const paramsToSign = body.paramsToSign;
 
       if (!paramsToSign) {
@@ -66,27 +65,40 @@ async function handler(request, response) {
       });
     }
 
-    // ------------------------------------------------------------
-    // GET — return every bib currently tagged, with its context
-    // metadata (name, country, date, challengeType, mileGoal) so
-    // the wall can render without a separate database.
-    // ------------------------------------------------------------
+    // GET — list every bib with the requested tag (paginated past 500).
     if (request.method === 'GET') {
-      const { resources } = await cloudinary.api.resources_by_tag(tag, {
-        context: true,
-        max_results: 500
-      });
+      const allowedTags = [envTag].concat(EXTRA_ALLOWED_TAGS).filter(Boolean);
+      const requested = request.query && request.query.tag
+        ? String(request.query.tag).trim()
+        : '';
 
-      return response.status(200).json({ resources });
+      if (requested && allowedTags.indexOf(requested) === -1) {
+        return response.status(400).json({ error: 'Tag not allowed.' });
+      }
+
+      const listTag = requested || envTag;
+      if (!listTag) {
+        return response.status(500).json({ error: 'No tag specified and CLOUDINARY_TAG is not set.' });
+      }
+
+      let resources = [];
+      let next_cursor;
+      do {
+        const page = await cloudinary.api.resources_by_tag(listTag, {
+          context: true,
+          max_results: 500,
+          next_cursor
+        });
+        resources = resources.concat(page.resources || []);
+        next_cursor = page.next_cursor;
+      } while (next_cursor);
+
+      response.setHeader('Cache-Control', 'no-store');
+      // "tag" and "count" make it obvious which tag was actually read.
+      return response.status(200).json({ tag: listTag, count: resources.length, resources });
     }
 
-    // ------------------------------------------------------------
-    // DELETE — admin-only bib removal. The passcode is checked here,
-    // server-side, against an environment variable — not against
-    // anything shipped to the browser. This is the real enforcement
-    // point; the client's "admin mode" is just a UI convenience that
-    // decides whether to show delete buttons and prompt for this code.
-    // ------------------------------------------------------------
+    // DELETE — admin-only, passcode checked server-side.
     if (request.method === 'DELETE') {
       const body = request.body || {};
       const { public_id, passcode } = body;
